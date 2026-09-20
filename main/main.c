@@ -446,8 +446,10 @@ static void init_softap(void)
     esp_netif_ip_info_t ip_info;
     esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     if (ap != NULL && esp_netif_get_ip_info(ap, &ip_info) == ESP_OK) {
-        ESP_LOGI(TAG, "AP SSID: %s", AP_SSID);
-        ESP_LOGI(TAG, "AP IP: " IPSTR, IP2STR(&ip_info.ip));   // default 192.168.4.1
+        // logged at WARN level so the message survives CONFIG_LOG_DEFAULT_LEVEL_WARN,
+        // which is what keeps the IDF info strings out of the binary
+        ESP_LOGW(TAG, "AP SSID: %s", AP_SSID);
+        ESP_LOGW(TAG, "AP IP: " IPSTR, IP2STR(&ip_info.ip));   // default 192.168.4.1
     }
 }
 
@@ -495,6 +497,6 @@ void app_main(void)
 
     xTaskCreate(anim_task, "anim", 3584, NULL, 5, NULL);
 
-    ESP_LOGI(TAG, "%d switches ready: join \"%s\" and open http://192.168.4.1/",
+    ESP_LOGW(TAG, "%d switches ready: join \"%s\" and open http://192.168.4.1/",
              NUM_GROUPS, AP_SSID);
 }
