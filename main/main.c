@@ -8,7 +8,8 @@
   The page itself lives in web/page.html and is turned into the PAGE_HTML
   string by tools/build_page.py (see main/page.h).
 
-  Target: ESP32 (esp32), data pin GPIO4, WS2812 via RMT.
+  Target: ESP32 (esp32). The strip hangs off the SPI2 (HSPI) native IOMUX MOSI pin,
+  GPIO13, so the SPI backend never routes the signal through the GPIO matrix.
 */
 
 #include <ctype.h>
@@ -29,7 +30,10 @@
 
 #include "page.h"   // PAGE_HTML
 
-#define LED_PIN         4        // data pin to WS2812 DIN (through 330 ohm)
+// Data to the strip. The SPI backend only drives MOSI, and GPIO13 is SPI2's (HSPI)
+// native IOMUX pin, so the signal skips the GPIO matrix entirely. SPI3's IOMUX MOSI
+// is GPIO23 if you would rather use VSPI.
+#define LED_PIN         13
 #define NUM_GROUPS      15
 #define LEDS_PER_GROUP  3        // WS2812s behind one lamp
 #define NUM_LEDS        (NUM_GROUPS * LEDS_PER_GROUP)
@@ -403,11 +407,13 @@ static void init_leds(void)
         .strip_gpio_num = LED_PIN,
         .max_leds = NUM_LEDS,
     };
-    const led_strip_rmt_config_t rmt_config = {
-        .resolution_hz = 10 * 1000 * 1000,   // 10 MHz, the WS2812 bit timing
+    const led_strip_spi_config_t spi_config = {
+        .spi_bus = SPI2_HOST,               // HSPI, the host whose IOMUX pin LED_PIN is
+        .clk_src = SPI_CLK_SRC_DEFAULT,     // 2.5 MHz, the WS2812 bit timing
+        .flags.with_dma = true,             // 405 bytes per refresh, far past the 64-byte FIFO
     };
 
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &s_strip));
+    ESP_ERROR_CHECK(led_strip_new_spi_device(&strip_config, &spi_config, &s_strip));
 
     memset(s_color, 0xFF, sizeof(s_color));   // every LED starts white
     render();                                 // ...and every LED starts dark

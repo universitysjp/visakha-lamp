@@ -12,8 +12,13 @@ app, no router and no internet connection involved.
 |---|---|
 | Board | ESP32 Dev Module (developed on an ESP32-D0WD-V3, 4 MB flash) |
 | LEDs | WS2812 / NeoPixel strip, 45 pixels — three per lamp |
-| Data | GPIO 4 → strip DIN, through a 330 Ω resistor |
+| Data | GPIO 13 → strip DIN, through a 330 Ω resistor |
 | Power | separate 5 V supply for the strip, ground shared with the ESP32 |
+
+This branch drives the strip from the **SPI** peripheral instead of RMT: the data line
+must sit on **GPIO 13**, the SPI2 (HSPI) native IOMUX MOSI pin, which the driver routes
+through the IOMUX rather than the GPIO matrix. (SPI3's IOMUX MOSI is GPIO 23.) The
+`main` branch uses RMT on GPIO 4 instead, so the wire has to move when you switch branches.
 
 Change `NUM_GROUPS`, `LEDS_PER_GROUP` or `NUM_LEDS` at the top of `main/main.c` if
 your panel is wired differently.
