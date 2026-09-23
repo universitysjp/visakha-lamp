@@ -13,6 +13,7 @@
 */
 
 #include <ctype.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -34,15 +35,33 @@
 // native IOMUX pin, so the signal skips the GPIO matrix entirely. SPI3's IOMUX MOSI
 // is GPIO23 if you would rather use VSPI.
 #define LED_PIN         13
-#define NUM_GROUPS      15
+#define NUM_GROUPS      22
 #define LEDS_PER_GROUP  3        // WS2812s behind one lamp
 #define NUM_LEDS        (NUM_GROUPS * LEDS_PER_GROUP)
-#define BRIGHTNESS      60       // startup brightness, 0-255. Keep low unless you have a strong 5V supply.
+#define BRIGHTNESS      255      // startup brightness, 0-255 (full on). Drop it if the 5V supply sags.
 #define NAME_LEN        24       // longest switch name, including the terminator
-#define ANIM_TICK_MS    20       // 50 frames per second
 
-static const char *AP_SSID = "ESP32-Lights";
-static const char *AP_PASS = "12345678";   // min 8 characters
+// Which lamp sits where on the strip. The panel is labelled 1..NUM_GROUPS in the
+// order you see it, but the strip was wired in a different order, so
+// s_lamp_to_strip[lamp] is the strip group (0-based) that lamp lamp+1 is wired to.
+// Everything else in this file works in label order - only render() and the
+// colour lookups translate, which is why the running light follows the labels.
+static const uint8_t s_lamp_to_strip[NUM_GROUPS] = {
+    9, 10, 8, 11, 12, 6, 7, 5, 4, 3, 14, 13, 1, 2, 16, 15, 0, 17, 18, 19, 21, 20,
+};
+#define ANIM_TICK_MS    10       // 100 frames per second
+
+// Wi-Fi access point credentials. The build reads these from .env (copy
+// .env.example and edit it); the values below are only used when .env is absent.
+#ifndef WIFI_SSID
+#define WIFI_SSID "Visakha Lamp"
+#endif
+#ifndef WIFI_PASS
+#define WIFI_PASS "12345678"   // min 8 characters
+#endif
+
+static const char *AP_SSID = WIFI_SSID;
+static const char *AP_PASS = WIFI_PASS;
 
 static const char *TAG = "lights";
 
@@ -52,43 +71,277 @@ static bool s_group_on[NUM_GROUPS] = { false };
 static char s_names[NUM_GROUPS][NAME_LEN];
 static uint8_t s_brightness = BRIGHTNESS;
 
-// Colour of every LED, 0-255 per channel. Set from the web page as hex codes.
-static uint8_t s_color[NUM_LEDS][3];
+// Colour of the three LEDs in a lamp. One triplet for the whole panel: LED slot k
+// of every lamp uses s_slot_color[k], so all the lamps always match.
+static uint8_t s_slot_color[LEDS_PER_GROUP][3];
 
-// ---------- transitions ----------
+// ---------- transitions: how one lamp switches ----------
 typedef enum {
     TRANSITION_NONE = 0,   // switch straight away
     TRANSITION_FADE,       // glide up and down
-    TRANSITION_STAR,       // twinkle like a star, then settle
 } transition_t;
 
-static transition_t s_transition = TRANSITION_NONE;
+static transition_t s_transition = TRANSITION_FADE;   // the default
 
 static float s_level[NUM_GROUPS];       // 0..1, what is on the strip right now
 static float s_target[NUM_GROUPS];      // 0 or 1, what was asked for
-static int s_twinkle_ms[NUM_GROUPS];    // random star: time left in the twinkle
-static int s_phase_ms[NUM_GROUPS];      // random star: time until the next blink
 static volatile unsigned s_redraw;      // bumped when colours must be pushed again
+static volatile unsigned s_version;     // bumped on every change the page should see
+
+static void bump(void)
+{
+    s_version++;
+}
+
+// ---------- animations: what the whole panel does ----------
+typedef enum {
+    ANIM_NONE = 0,
+    ANIM_STAR,      // lamps twinkle at random, like stars
+    ANIM_CHASE,     // a light runs up the panel, bottom row to top row
+} animation_t;
+
+// The panel's rows, bottom row first, so the chase climbs the way the panel hangs.
+// Each row lists the lamps (0-based) that light together, ended by 0xFF.
+#define ROW_END 0xFF
+#define NUM_ROWS (sizeof(s_rows) / sizeof(s_rows[0]))
+
+static const uint8_t s_rows[][6] = {
+    { 16, 20, 21, ROW_END },              // row 6: lamps 17, 21, 22
+    { 12, 13, 17, 18, 19, ROW_END },      // row 5: lamps 13, 14, 18, 19, 20
+    { 7, 8, 9, 14, 15, ROW_END },         // row 4: lamps 8, 9, 10, 15, 16
+    { 5, 6, 10, 11, ROW_END },            // row 3: lamps 6, 7, 11, 12
+    { 2, 3, 4, ROW_END },                 // row 2: lamps 3, 4, 5
+    { 0, 1, ROW_END },                    // row 1: lamps 1, 2
+};
+
+#define SEQ_STEP_MS     1000        // one more lamp every second while filling
+#define HOLD_DEFAULT_S   900        // 15 minutes between the fill and the animation
+#define FADE_MS          250        // how long a lamp takes to fade in or out
+#define CHASE_ROWS_PER_S 1.5f       // how fast the chase climbs the panel
+#define CHASE_WIDTH      1.3f       // how many rows wide its glow is
+
+typedef enum {
+    SEQ_IDLE = 0,
+    SEQ_FILLING,    // switching on the lamps that were still off, one per second
+    SEQ_WAITING,    // every lamp is on, sitting out the hold
+    SEQ_RUNNING,    // the chosen animation is playing
+} seq_state_t;
+
+static seq_state_t s_seq = SEQ_IDLE;
+static animation_t s_animation = ANIM_CHASE;
+static int s_hold_s = HOLD_DEFAULT_S;   // seconds between the fill and the animation
+static int s_seq_next;                  // lamp the fill is up to
+static int s_seq_wait_ms;               // counts down a fill step, then the hold
+static float s_chase_pos;               // where the chase is, in rows, moving smoothly
+static int s_star_ms;
+static float s_anim_level[NUM_GROUPS];  // what the animation adds on top
+
+// defined below the animation loop, which the sequence uses
+static void set_group(int g, bool on);
+
+// ---------- settings that survive a power cut ----------
+#define NVS_NAMESPACE    "lamp"
+#define NVS_KEY          "settings"
+#define SETTINGS_VERSION 3
+
+typedef struct {
+    uint16_t version;
+    uint8_t brightness;
+    uint8_t transition;
+    uint8_t animation;
+    uint32_t hold_s;
+    uint8_t on[NUM_GROUPS];
+    char names[NUM_GROUPS][NAME_LEN];
+    uint8_t colors[LEDS_PER_GROUP][3];
+} settings_blob_t;
+
+static settings_blob_t s_blob;
+static bool s_save_wanted;
+static int s_save_in_ms;
+
+// Call after anything worth remembering; the write happens once changes stop.
+static void settings_touch(void)
+{
+    s_save_wanted = true;
+    s_save_in_ms = 1000;
+}
+
+static void settings_defaults(void)
+{
+    s_brightness = BRIGHTNESS;
+    s_transition = TRANSITION_FADE;
+    s_animation = ANIM_CHASE;
+    s_hold_s = HOLD_DEFAULT_S;
+    memset(s_slot_color, 0xFF, sizeof(s_slot_color));   // every LED white
+
+    for (int g = 0; g < NUM_GROUPS; g++) {
+        s_group_on[g] = false;
+        s_target[g] = 0.0f;
+        s_level[g] = 0.0f;
+        snprintf(s_names[g], sizeof(s_names[g]), "Lamp %d", g + 1);
+    }
+}
+
+static void settings_save(void)
+{
+    nvs_handle_t h;
+
+    s_blob.version = SETTINGS_VERSION;
+    s_blob.brightness = s_brightness;
+    s_blob.transition = (uint8_t)s_transition;
+    s_blob.animation = (uint8_t)s_animation;
+    s_blob.hold_s = (uint32_t)s_hold_s;
+    for (int g = 0; g < NUM_GROUPS; g++) {
+        s_blob.on[g] = s_group_on[g] ? 1 : 0;
+        memcpy(s_blob.names[g], s_names[g], NAME_LEN);
+    }
+    memcpy(s_blob.colors, s_slot_color, sizeof(s_blob.colors));
+
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    if (nvs_set_blob(h, NVS_KEY, &s_blob, sizeof(s_blob)) == ESP_OK) {
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
+static void settings_load(void)
+{
+    size_t len = sizeof(s_blob);
+    nvs_handle_t h;
+
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "no saved settings yet, using the defaults");
+        return;
+    }
+    esp_err_t err = nvs_get_blob(h, NVS_KEY, &s_blob, &len);
+    nvs_close(h);
+
+    if (err != ESP_OK || len != sizeof(s_blob) || s_blob.version != SETTINGS_VERSION) {
+        ESP_LOGW(TAG, "saved settings are missing or from another version, using the defaults");
+        return;
+    }
+
+    s_brightness = s_blob.brightness;
+    s_transition = (transition_t)(s_blob.transition <= TRANSITION_FADE ? s_blob.transition : TRANSITION_FADE);
+    s_animation = (animation_t)(s_blob.animation <= ANIM_CHASE ? s_blob.animation : ANIM_CHASE);
+    s_hold_s = (int)(s_blob.hold_s <= 86400u ? s_blob.hold_s : HOLD_DEFAULT_S);
+
+    int on_count = 0;
+
+    for (int g = 0; g < NUM_GROUPS; g++) {
+        s_group_on[g] = s_blob.on[g] != 0;
+        s_target[g] = s_group_on[g] ? 1.0f : 0.0f;
+        s_level[g] = s_target[g];
+        memcpy(s_names[g], s_blob.names[g], NAME_LEN);
+        s_names[g][NAME_LEN - 1] = '\0';
+        on_count += s_group_on[g] ? 1 : 0;
+    }
+    memcpy(s_slot_color, s_blob.colors, sizeof(s_blob.colors));
+    bump();
+
+    ESP_LOGW(TAG, "settings restored: brightness %u, transition %d, animation %d, hold %d s, %d lamps on",
+             (unsigned)s_brightness, (int)s_transition, (int)s_animation, s_hold_s, on_count);
+}
+
+// While an animation runs it takes over the brightness: the lamps it is not
+// touching drop back so the moving light (or the twinkle) actually shows. Without
+// this the animation would be invisible on a panel that is already all lit.
+static float animation_base(void)
+{
+    if (s_seq != SEQ_RUNNING) {
+        return 1.0f;
+    }
+    return (s_animation == ANIM_CHASE) ? 0.12f : 0.35f;
+}
 
 static void render(void)
 {
     for (int g = 0; g < NUM_GROUPS; g++) {
-        float dim = (float)s_brightness * s_level[g] / 255.0f;   // 0..1
+        int strip = s_lamp_to_strip[g];      // where this label lives on the strip
+        float level = s_level[g] * animation_base();
+
+        if (s_anim_level[g] > level) {
+            level = s_anim_level[g];              // the animation rides on top
+        }
+        float dim = (float)s_brightness * level / 255.0f;   // 0..1
 
         for (int k = 0; k < LEDS_PER_GROUP; k++) {
-            int led = g * LEDS_PER_GROUP + k;
+            int led = strip * LEDS_PER_GROUP + k;
 
             if (led >= NUM_LEDS) {
                 break;
             }
-            uint8_t r = (uint8_t)((float)s_color[led][0] * dim + 0.5f);
-            uint8_t gg = (uint8_t)((float)s_color[led][1] * dim + 0.5f);
-            uint8_t b = (uint8_t)((float)s_color[led][2] * dim + 0.5f);
+            uint8_t r = (uint8_t)((float)s_slot_color[k][0] * dim + 0.5f);
+            uint8_t gg = (uint8_t)((float)s_slot_color[k][1] * dim + 0.5f);
+            uint8_t b = (uint8_t)((float)s_slot_color[k][2] * dim + 0.5f);
 
             led_strip_set_pixel(s_strip, led, r, gg, b);
         }
     }
     led_strip_refresh(s_strip);
+}
+
+// Brightness of every row for the current chase position: a soft glow that fades
+// in and out as it climbs, so the motion is smooth rather than one row per step.
+static void chase_levels(void)
+{
+    for (int r = 0; r < (int)NUM_ROWS; r++) {
+        float d = fabsf((float)r - s_chase_pos);
+
+        if (d > (float)NUM_ROWS / 2.0f) {
+            d = (float)NUM_ROWS - d;             // the glow loops round
+        }
+        float lvl = 1.0f - d / CHASE_WIDTH;
+
+        if (lvl < 0.0f) {
+            lvl = 0.0f;
+        }
+        lvl = lvl * lvl * (3.0f - 2.0f * lvl);   // smoothstep, softer edges
+
+        for (int i = 0; s_rows[r][i] != ROW_END; i++) {
+            s_anim_level[s_rows[r][i]] = lvl;
+        }
+    }
+}
+
+// Move the chosen animation on by one frame.
+static void animation_tick(void)
+{
+    if (s_animation == ANIM_CHASE) {
+        s_chase_pos += CHASE_ROWS_PER_S * (float)ANIM_TICK_MS / 1000.0f;
+        if (s_chase_pos >= (float)NUM_ROWS) {
+            s_chase_pos -= (float)NUM_ROWS;
+        }
+        chase_levels();
+    } else if (s_animation == ANIM_STAR) {
+        for (int g = 0; g < NUM_GROUPS; g++) {
+            s_anim_level[g] *= 0.91f;           // let each flash die away
+            if (s_anim_level[g] < 0.02f) {
+                s_anim_level[g] = 0.0f;
+            }
+        }
+        s_star_ms -= ANIM_TICK_MS;
+        if (s_star_ms <= 0) {
+            s_star_ms = 60 + (int)(rand() % 120);
+            int flashes = 1 + (int)(rand() % 3);
+
+            for (int i = 0; i < flashes; i++) {
+                s_anim_level[rand() % NUM_GROUPS] = 0.6f + (float)(rand() % 40) / 100.0f;
+            }
+        }
+    }
+}
+
+static void animation_reset(void)
+{
+    s_chase_pos = 0.0f;
+    s_star_ms = 0;
+    for (int g = 0; g < NUM_GROUPS; g++) {
+        s_anim_level[g] = 0.0f;   // nothing on top of the lamps until the animation ticks
+    }
+    s_redraw++;
 }
 
 // One animation frame for every switch at once.
@@ -100,21 +353,47 @@ static void anim_task(void *arg)
     while (true) {
         bool moved = false;
 
+        // the "light the rest" sequence, one step at a time
+        if (s_seq == SEQ_FILLING) {
+            if (s_seq_wait_ms > 0) {
+                s_seq_wait_ms -= ANIM_TICK_MS;
+            } else {
+                while (s_seq_next < NUM_GROUPS && s_group_on[s_seq_next]) {
+                    s_seq_next++;               // skip the lamps that are already on
+                }
+                if (s_seq_next >= NUM_GROUPS) {
+                    s_seq = SEQ_WAITING;        // everything is lit: sit out the hold
+                    s_seq_wait_ms = s_hold_s * 1000;
+                    bump();
+                    ESP_LOGW(TAG, "sequence: all lamps lit, waiting %d s before the animation", s_hold_s);
+                } else {
+                    set_group(s_seq_next, true);
+                    s_seq_next++;
+                    s_seq_wait_ms = SEQ_STEP_MS;
+                }
+            }
+        } else if (s_seq == SEQ_WAITING) {
+            s_seq_wait_ms -= ANIM_TICK_MS;
+            if (s_seq_wait_ms <= 0) {
+                s_seq = SEQ_RUNNING;
+                animation_reset();
+                bump();
+                ESP_LOGW(TAG, "sequence: starting animation %d", (int)s_animation);
+            }
+        }
+        if (s_seq == SEQ_RUNNING) {
+            animation_tick();
+            moved = true;                       // the animation moves every frame
+        }
+
         for (int g = 0; g < NUM_GROUPS; g++) {
             float before = s_level[g];
 
-            if (s_twinkle_ms[g] > 0) {
-                s_twinkle_ms[g] -= ANIM_TICK_MS;
-                s_phase_ms[g] -= ANIM_TICK_MS;
-                if (s_phase_ms[g] <= 0) {
-                    s_level[g] = (rand() % 100) < 55 ? 1.0f : 0.22f;
-                    s_phase_ms[g] = 40 + rand() % 50;
-                }
-                if (s_twinkle_ms[g] <= 0) {
-                    s_level[g] = s_target[g];   // settle where it belongs
-                }
-            } else if (s_level[g] != s_target[g]) {
-                float step = (s_transition == TRANSITION_FADE) ? 0.10f : 1.0f;
+            if (s_level[g] != s_target[g]) {
+                // fade over FADE_MS whatever the frame rate is
+                float step = (s_transition == TRANSITION_FADE)
+                             ? (float)ANIM_TICK_MS / (float)FADE_MS
+                             : 1.0f;
 
                 if (s_level[g] < s_target[g]) {
                     s_level[g] += step;
@@ -138,6 +417,12 @@ static void anim_task(void *arg)
             drawn = s_redraw;
             render();
         }
+
+        // write the settings out once the changes have stopped coming
+        if (s_save_wanted && (s_save_in_ms -= ANIM_TICK_MS) <= 0) {
+            s_save_wanted = false;
+            settings_save();
+        }
         vTaskDelay(pdMS_TO_TICKS(ANIM_TICK_MS));
     }
 }
@@ -146,24 +431,54 @@ static void set_group(int g, bool on)
 {
     s_group_on[g] = on;
     s_target[g] = on ? 1.0f : 0.0f;
-
-    if (s_transition == TRANSITION_STAR) {
-        s_twinkle_ms[g] = 700;
-        s_phase_ms[g] = 0;              // start blinking right away
-        if (on) {
-            s_level[g] = 1.0f;          // first flash
-        }
-    }
+    settings_touch();
+    bump();
 }
 
 static void set_transition(int mode)
 {
     s_transition = (transition_t)mode;
     for (int g = 0; g < NUM_GROUPS; g++) {
-        s_twinkle_ms[g] = 0;
         s_level[g] = s_target[g];       // snap to whatever was asked for
     }
     s_redraw++;
+    settings_touch();
+    bump();
+}
+
+static void set_animation(int mode)
+{
+    s_animation = (animation_t)mode;
+    settings_touch();
+    bump();
+}
+
+static void set_hold(int seconds)
+{
+    s_hold_s = seconds;
+    settings_touch();
+    bump();
+}
+
+// Start filling in the lamps that are still dark, one per second; the hold and
+// then the chosen animation follow by themselves.
+static void sequence_start(void)
+{
+    s_seq = SEQ_FILLING;
+    s_seq_next = 0;
+    s_seq_wait_ms = 0;
+    bump();
+    ESP_LOGW(TAG, "sequence: filling the dark lamps, then holding %d s, animation %d",
+             s_hold_s, (int)s_animation);
+}
+
+// Give up the sequence and leave the lamps to settle on their own. The levels are
+// deliberately not snapped here: a lamp you just tapped still has to fade in.
+static void sequence_stop(void)
+{
+    s_seq = SEQ_IDLE;
+    animation_reset();
+    bump();
 }
 
 // ---------- helpers ----------
@@ -278,15 +593,27 @@ static esp_err_t handle_set(httpd_req_t *req)
     }
 
     set_group(i, v == 1);
+    sequence_stop();                    // a tap takes over from the sequence
     return send_plain(req, "200 OK", "ok");
 }
 
 static esp_err_t handle_all_off(httpd_req_t *req)
 {
+    sequence_stop();
     for (int g = 0; g < NUM_GROUPS; g++) {
         set_group(g, false);
     }
     return send_plain(req, "200 OK", "ok");
+}
+
+static esp_err_t handle_sequence(httpd_req_t *req)
+{
+    if (s_seq == SEQ_IDLE) {
+        sequence_start();
+        return send_plain(req, "200 OK", "started");
+    }
+    sequence_stop();
+    return send_plain(req, "200 OK", "stopped");
 }
 
 static esp_err_t handle_brightness(httpd_req_t *req)
@@ -307,6 +634,66 @@ static esp_err_t handle_brightness(httpd_req_t *req)
 
     s_brightness = (uint8_t)v;
     s_redraw++;
+    settings_touch();
+    bump();
+    return send_plain(req, "200 OK", "ok");
+}
+
+// A counter the page watches: it changes whenever anything it displays changes,
+// so the page can stay in step without re-reading the whole state all the time.
+static esp_err_t handle_version(httpd_req_t *req)
+{
+    char buf[12];
+
+    snprintf(buf, sizeof(buf), "%u", (unsigned)s_version);
+    return send_plain(req, "200 OK", buf);
+}
+
+static esp_err_t handle_animation(httpd_req_t *req)
+{
+    char arg_v[8];
+
+    if (!query_arg(req, "v", arg_v, sizeof(arg_v))) {
+        return send_plain(req, "400 Bad Request", "missing v");
+    }
+
+    int v = atoi(arg_v);
+    if (v < ANIM_NONE || v > ANIM_CHASE) {
+        return send_plain(req, "400 Bad Request", "bad animation");
+    }
+
+    set_animation(v);
+    if (v == ANIM_NONE) {
+        sequence_stop();                // stop whatever is playing
+    } else {
+        s_seq = SEQ_RUNNING;            // preview the choice straight away
+        animation_reset();
+        bump();
+        ESP_LOGW(TAG, "animation %d started from the settings page", v);
+    }
+    return send_plain(req, "200 OK", "ok");
+}
+
+static esp_err_t handle_hold(httpd_req_t *req)
+{
+    char arg_v[12];
+
+    if (!query_arg(req, "v", arg_v, sizeof(arg_v))) {
+        return send_plain(req, "400 Bad Request", "missing v");
+    }
+
+    int v = atoi(arg_v);
+    if (v < 0) {
+        v = 0;
+    }
+    if (v > 86400) {
+        v = 86400;                      // a day is plenty
+    }
+
+    set_hold(v);
+    if (s_seq == SEQ_WAITING) {
+        s_seq_wait_ms = v * 1000;       // a wait already under way follows the new value
+    }
     return send_plain(req, "200 OK", "ok");
 }
 
@@ -319,7 +706,7 @@ static esp_err_t handle_transition(httpd_req_t *req)
     }
 
     int v = atoi(arg_v);
-    if (v < TRANSITION_NONE || v > TRANSITION_STAR) {
+    if (v < TRANSITION_NONE || v > TRANSITION_FADE) {
         return send_plain(req, "400 Bad Request", "bad mode");
     }
 
@@ -329,17 +716,17 @@ static esp_err_t handle_transition(httpd_req_t *req)
 
 static esp_err_t handle_color(httpd_req_t *req)
 {
-    char arg_i[8];
+    char arg_k[8];
     char arg_c[16];
     uint8_t rgb[3];
 
-    if (!query_arg(req, "i", arg_i, sizeof(arg_i)) || !query_arg(req, "c", arg_c, sizeof(arg_c))) {
-        return send_plain(req, "400 Bad Request", "missing i or c");
+    if (!query_arg(req, "k", arg_k, sizeof(arg_k)) || !query_arg(req, "c", arg_c, sizeof(arg_c))) {
+        return send_plain(req, "400 Bad Request", "missing k or c");
     }
 
-    int i = atoi(arg_i);
-    if (i < 0 || i >= NUM_LEDS) {
-        return send_plain(req, "400 Bad Request", "bad index");
+    int k = atoi(arg_k);
+    if (k < 0 || k >= LEDS_PER_GROUP) {
+        return send_plain(req, "400 Bad Request", "bad slot");
     }
 
     url_decode(arg_c);
@@ -347,10 +734,31 @@ static esp_err_t handle_color(httpd_req_t *req)
         return send_plain(req, "400 Bad Request", "bad colour");
     }
 
-    s_color[i][0] = rgb[0];
-    s_color[i][1] = rgb[1];
-    s_color[i][2] = rgb[2];
+    s_slot_color[k][0] = rgb[0];
+    s_slot_color[k][1] = rgb[1];
+    s_slot_color[k][2] = rgb[2];
     s_redraw++;
+    settings_touch();
+    bump();
+    return send_plain(req, "200 OK", "ok");
+}
+
+// Wipe every saved setting and lamp state and go back to how it shipped.
+static esp_err_t handle_reset(httpd_req_t *req)
+{
+    nvs_handle_t h;
+
+    sequence_stop();
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, NVS_KEY);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    settings_defaults();
+    s_save_wanted = false;          // nothing to write until something changes again
+    s_redraw++;
+    bump();
+    ESP_LOGW(TAG, "factory reset: settings and lamp states cleared");
     return send_plain(req, "200 OK", "ok");
 }
 
@@ -370,12 +778,14 @@ static esp_err_t handle_name(httpd_req_t *req)
 
     url_decode(arg_n);
     strlcpy(s_names[i], arg_n, sizeof(s_names[i]));
+    settings_touch();
+    bump();
     return send_plain(req, "200 OK", "ok");
 }
 
 static esp_err_t handle_state(httpd_req_t *req)
 {
-    static char json[NUM_LEDS * 9 + NUM_GROUPS * (2 * NAME_LEN + 8) + 96];
+    static char json[NUM_GROUPS * (2 * NAME_LEN + 8) + 256];
     size_t pos = 0;
 
     pos = json_addf(json, pos, sizeof(json), "{\"on\":[");
@@ -389,12 +799,15 @@ static esp_err_t handle_state(httpd_req_t *req)
         pos = json_addf(json, pos, sizeof(json), "\"");
     }
     pos = json_addf(json, pos, sizeof(json), "],\"colors\":[");
-    for (int led = 0; led < NUM_LEDS; led++) {
-        pos = json_addf(json, pos, sizeof(json), "%s%02X%02X%02X", led ? "," : "",
-                        s_color[led][0], s_color[led][1], s_color[led][2]);
+    for (int k = 0; k < LEDS_PER_GROUP; k++) {
+        pos = json_addf(json, pos, sizeof(json), "%s%02X%02X%02X", k ? "," : "",
+                        s_slot_color[k][0], s_slot_color[k][1], s_slot_color[k][2]);
     }
-    json_addf(json, pos, sizeof(json), "],\"brightness\":%u,\"transition\":%d}",
-              (unsigned)s_brightness, (int)s_transition);
+    json_addf(json, pos, sizeof(json),
+              "],\"brightness\":%u,\"transition\":%d,\"animation\":%d,\"hold\":%d,"
+              "\"wait\":%d,\"sequence\":%d}",
+              (unsigned)s_brightness, (int)s_transition, (int)s_animation, s_hold_s,
+              s_seq == SEQ_WAITING ? (s_seq_wait_ms + 999) / 1000 : 0, (int)s_seq);
 
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
@@ -415,8 +828,7 @@ static void init_leds(void)
 
     ESP_ERROR_CHECK(led_strip_new_spi_device(&strip_config, &spi_config, &s_strip));
 
-    memset(s_color, 0xFF, sizeof(s_color));   // every LED starts white
-    render();                                 // ...and every LED starts dark
+    render();   // whatever the saved settings say
 }
 
 static void init_softap(void)
@@ -459,22 +871,44 @@ static void start_webserver(void)
         { .uri = "/",           .method = HTTP_GET, .handler = handle_root },
         { .uri = "/set",        .method = HTTP_GET, .handler = handle_set },
         { .uri = "/alloff",     .method = HTTP_GET, .handler = handle_all_off },
+        { .uri = "/sequence",   .method = HTTP_GET, .handler = handle_sequence },
+        { .uri = "/version",    .method = HTTP_GET, .handler = handle_version },
         { .uri = "/brightness", .method = HTTP_GET, .handler = handle_brightness },
         { .uri = "/transition", .method = HTTP_GET, .handler = handle_transition },
+        { .uri = "/animation",  .method = HTTP_GET, .handler = handle_animation },
+        { .uri = "/hold",       .method = HTTP_GET, .handler = handle_hold },
         { .uri = "/color",      .method = HTTP_GET, .handler = handle_color },
         { .uri = "/name",       .method = HTTP_GET, .handler = handle_name },
+        { .uri = "/reset",      .method = HTTP_GET, .handler = handle_reset },
         { .uri = "/state",      .method = HTTP_GET, .handler = handle_state },
     };
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     httpd_handle_t server = NULL;
 
-    config.max_uri_handlers = 12;   // 8 routes registered below
+    config.max_uri_handlers = 14;   // 11 routes registered below
 
     ESP_ERROR_CHECK(httpd_start(&server, &config));
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         ESP_ERROR_CHECK(httpd_register_uri_handler(server, &routes[i]));
     }
+}
+
+// A broken map silently lights the wrong lamps, so complain loudly at boot.
+static void check_lamp_map(void)
+{
+    uint8_t seen[NUM_GROUPS] = { 0 };
+
+    for (int g = 0; g < NUM_GROUPS; g++) {
+        uint8_t strip = s_lamp_to_strip[g];
+
+        if (strip >= NUM_GROUPS || seen[strip]) {
+            ESP_LOGE(TAG, "lamp map is broken: lamp %d -> strip %d", g + 1, strip + 1);
+            return;
+        }
+        seen[strip] = 1;
+    }
+    ESP_LOGW(TAG, "lamp map ok: labels 1-%d each mapped to one strip position", NUM_GROUPS);
 }
 
 void app_main(void)
@@ -487,16 +921,16 @@ void app_main(void)
         ESP_ERROR_CHECK(nvs);
     }
 
-    for (int g = 0; g < NUM_GROUPS; g++) {
-        snprintf(s_names[g], sizeof(s_names[g]), "Switch %d", g + 1);
-    }
+    settings_defaults();
+    settings_load();
 
+    check_lamp_map();
     init_leds();
     init_softap();
     start_webserver();
 
     xTaskCreate(anim_task, "anim", 3584, NULL, 5, NULL);
 
-    ESP_LOGW(TAG, "%d switches ready: join \"%s\" and open http://192.168.4.1/",
+    ESP_LOGW(TAG, "%d lamps ready: join \"%s\" and open http://192.168.4.1/",
              NUM_GROUPS, AP_SSID);
 }

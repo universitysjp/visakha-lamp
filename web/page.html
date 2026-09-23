@@ -7,7 +7,7 @@
  *{box-sizing:border-box}
  html,body{height:100%}
  body{margin:0;background:var(--bg);color:var(--txt);display:flex;flex-direction:column;
-      min-height:100dvh;font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;
+      height:100dvh;overflow:hidden;font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;
       -webkit-tap-highlight-color:transparent}
  header{display:flex;align-items:center;gap:11px;padding:12px 14px 4px;flex:none}
  .logo{width:32px;height:39px;flex:none;display:block}
@@ -20,8 +20,8 @@
       font:14px system-ui,-apple-system,sans-serif;cursor:pointer;white-space:nowrap}
  .btn:hover{border-color:var(--line2)}
  .btn:focus-visible,.tile:focus-visible,input:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
- main{flex:1 1 auto;min-height:0;padding:8px 12px}
- .grid{display:grid;gap:8px;height:100%}
+ main{flex:1 1 auto;min-height:0;overflow-y:auto;padding:8px 12px}
+ .grid{display:grid;gap:8px}
  .tile{display:grid;grid-template-rows:1fr auto;justify-items:center;align-items:center;gap:2px;
        min-height:0;overflow:hidden;padding:6px 5px 5px;background:var(--card);
        border:1px solid var(--line);border-radius:12px;font:inherit;color:inherit;cursor:pointer;
@@ -35,9 +35,13 @@
        box-shadow:0 0 0 1px rgba(240,165,0,.3),0 10px 22px -14px rgba(255,203,8,.95)}
  .tile[aria-checked=true] .label{color:var(--txt)}
  .num{font:700 118px system-ui,-apple-system,sans-serif;fill:#141718}
- footer{flex:none;display:flex;justify-content:center;padding:6px 14px 14px}
+ footer{flex:none;display:flex;justify-content:center;gap:8px;padding:6px 14px 14px;
+        background:var(--bg);border-top:1px solid rgba(65,85,160,.45)}
  .gear{opacity:.75}
  .gear:hover{opacity:1}
+ .btn.show{background:var(--gold);border-color:var(--gold);color:#141718;font-weight:600}
+ .btn.show:hover{filter:brightness(1.07)}
+ .btn.show.active{background:var(--card);border-color:var(--amber);color:var(--txt);font-weight:400}
  dialog{width:min(520px,100% - 24px);max-height:86vh;padding:0;color:var(--txt);
         background:var(--card);border:1px solid var(--line);border-radius:16px}
  dialog::backdrop{background:rgba(6,10,32,.72)}
@@ -45,6 +49,8 @@
  dialog .top{display:flex;align-items:center;justify-content:space-between;
              padding:14px 16px;border-bottom:1px solid var(--line)}
  dialog .body{padding:14px 16px;max-height:calc(86vh - 118px);overflow:auto}
+ dialog .foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;
+              border-top:1px solid var(--line)}
  dialog h3{margin:0 0 9px;font-size:12px;font-weight:600;color:var(--dim);
            text-transform:uppercase;letter-spacing:.09em}
  .field{margin-bottom:20px}
@@ -61,23 +67,28 @@
  .nrow{display:flex;align-items:center;gap:9px}
  .nrow span{width:22px;flex:none;text-align:right;font-size:12.5px;color:var(--dim);
             font-variant-numeric:tabular-nums}
- input[type=text]{flex:1;min-width:0;background:var(--inset);color:var(--txt);
+ input[type=text],input[type=number]{flex:1;min-width:0;background:var(--inset);color:var(--txt);
                   font:14px system-ui,sans-serif;border:1px solid var(--line);
                   border-radius:8px;padding:8px 10px}
- input[type=text]:focus{outline:none;border-color:var(--gold)}
+ input[type=text]:focus,input[type=number]:focus{outline:none;border-color:var(--gold)}
+ .holdrow{margin-top:12px}
+ .holdrow span{font-size:12.5px;color:var(--dim)}
  .lampcfg{padding:10px 0;border-bottom:1px solid rgba(65,85,160,.5)}
  .lampcfg:last-child{border-bottom:0}
- .hexes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:7px 0 0 31px}
- .hexbox{display:flex;align-items:center;gap:6px;background:var(--inset);
-         border:1px solid var(--line);border-radius:8px;padding:5px 7px}
- .hexbox span{width:12px;height:12px;flex:none;border-radius:3px;background:var(--c,#fff);
-              box-shadow:inset 0 0 0 1px rgba(255,255,255,.35)}
- .hexbox input[type=text]{border:0;background:transparent;padding:0;border-radius:0;
-                          color:var(--txt);font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace}
- .hexbox:focus-within{border-color:var(--gold)}
- .hexbox.bad{border-color:#ff6b6b}
+ .hexes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:7px 0 0 31px}
+ .swatch{display:block;background:var(--inset);border:1px solid var(--line);
+         border-radius:8px;padding:4px;cursor:pointer}
+ .swatch:focus-within{border-color:var(--gold)}
+ .swatch input[type=color]{display:block;width:100%;height:30px;padding:0;border:0;
+                           border-radius:6px;background:none;cursor:pointer}
  @media (min-width:560px){#names{display:grid;grid-template-columns:1fr 1fr;gap:0 20px}}
  .hint{margin:18px 0 0;font-size:12px;color:var(--dim)}
+ .danger{background:#5d2430;border-color:#8c3a4a;color:#ffd9df}
+ .danger:hover{background:#6d2a38;border-color:#a8485c}
+ .danger-zone{margin:22px 0 0;padding-top:18px;border-top:1px solid rgba(65,85,160,.5)}
+ .danger-zone .hint{margin-top:10px}
+ .ask{margin:0;font-size:13.5px;line-height:1.5}
+ .ask em{color:var(--txt);font-style:normal;font-weight:600}
  @media (max-height:420px){.tile .label{display:none}}
 </style></head><body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
@@ -106,6 +117,7 @@
 </header>
 <main><div class="grid" id="grid"></div></main>
 <footer>
+  <button class="btn show" id="sequence" type="button">Light the rest</button>
   <button class="btn gear" id="opencfg" type="button">
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
          stroke-width="2" stroke-linecap="round" aria-hidden="true">
@@ -123,26 +135,61 @@
   </div>
   <div class="body">
     <div class="field">
-      <div class="row"><label for="bright">Brightness</label><output id="brightval">24%</output></div>
-      <input type="range" id="bright" min="0" max="255" step="1" value="60">
+      <div class="row"><label for="bright">Brightness</label><output id="brightval">100%</output></div>
+      <input type="range" id="bright" min="0" max="255" step="1" value="255">
     </div>
     <div class="field">
       <h3>Transitions</h3>
       <div class="radios" id="trans">
         <label><input type="radio" name="transition" value="0">None<small>instant</small></label>
         <label><input type="radio" name="transition" value="1">Fade<small>glide on and off</small></label>
-        <label><input type="radio" name="transition" value="2">Random star<small>twinkle, then settle</small></label>
       </div>
     </div>
-    <h3>Switches</h3>
+    <div class="field">
+      <h3>Animations</h3>
+      <div class="radios" id="anim">
+        <label><input type="radio" name="animation" value="0">None<small>leave the lamps alone</small></label>
+        <label><input type="radio" name="animation" value="1">Random star<small>lamps twinkle like stars</small></label>
+        <label><input type="radio" name="animation" value="2">Chase<small>row by row, bottom to top</small></label>
+      </div>
+      <div class="row holdrow"><label for="hold">Start animation after</label><span>seconds</span></div>
+      <input type="number" id="hold" min="0" max="86400" step="1" value="900">
+    </div>
+    <div class="field">
+      <h3>Colours</h3>
+      <div class="hexes" id="colours"></div>
+      <p class="hint">One colour for each of the three LEDs in a lamp. Every lamp matches.</p>
+    </div>
+    <h3>Lamps</h3>
     <div id="names"></div>
-    <p class="hint">Name each switch and give its three LEDs a hex colour. Settings reset when the panel is unplugged.</p>
+    <p class="hint">Name each lamp. Settings reset when the panel is unplugged.</p>
+    <div class="field danger-zone">
+      <h3>Factory reset</h3>
+      <button class="btn danger" id="askreset" type="button">Reset everything</button>
+      <p class="hint">Clears the brightness, transitions, animations, the hold, every lamp name, the colours and the lamp states.</p>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="confirm">
+  <div class="top">
+    <h2>Factory reset?</h2>
+  </div>
+  <div class="body">
+    <p class="ask">This puts the panel back to how it shipped: brightness 100%, Fade,
+      Chase, a 15 minute hold, every lamp called <em>Lamp 1</em>&hellip;<em>Lamp 22</em>,
+      white LEDs and all lamps off. It cannot be undone.</p>
+  </div>
+  <div class="foot">
+    <button class="btn" id="nocancel" type="button">Cancel</button>
+    <button class="btn danger" id="doreset" type="button">Reset everything</button>
   </div>
 </dialog>
 
 
 <script>
-const N = 15;
+const N = 22;
+const FIT = 15;                              /* buttons that fill the first screen */
 const PER_LAMP = 3;                          /* WS2812s behind each lamp */
 const VIEWBOX = "152 200 456 340", NUMX = 368.0, NUMY = 433.0;
 const ART = 456 / 340;                       /* lamp aspect ratio, for the grid fit */
@@ -151,14 +198,13 @@ const grid = document.getElementById("grid");
 const bright = document.getElementById("bright");
 const brightval = document.getElementById("brightval");
 const state = {on: new Array(N).fill(false),
-               names: Array.from({length: N}, (_, i) => "Switch " + (i + 1)),
-               colors: new Array(N * PER_LAMP).fill("#FFFFFF"),
-               brightness: 60, transition: 0};
-const tiles = [], inputs = [], hexboxes = [];
+               names: Array.from({length: N}, (_, i) => "Lamp " + (i + 1)),
+               colors: new Array(PER_LAMP).fill("#FFFFFF"),
+               brightness: 255, transition: 1, animation: 2, hold: 900,
+               wait: 0, sequence: 0};
+const tiles = [], inputs = [], swatches = [];
 
 const pct = (v) => Math.round(v / 255 * 100) + "%";
-const HEXRE = /^#?([0-9a-fA-F]{6})$/;
-const norm_hex = (v) => { const m = HEXRE.exec(String(v).trim()); return m ? "#" + m[1].toUpperCase() : null; };
 
 /* one lamp per switch, switch number drawn inside the bowl */
 const tile_svg = (n) =>
@@ -167,26 +213,29 @@ const tile_svg = (n) =>
   '<text class="num" x="' + NUMX + '" y="' + NUMY + '" text-anchor="middle" ' +
   'dominant-baseline="central">' + n + '</text></svg>';
 
-/* pick the column count that fills the viewport with the largest lamps */
+/* Size the lamps so FIT of them fill the screen; the rest scroll below. */
 function layout() {
-  const h = grid.clientWidth, v = grid.clientHeight;
+  const h = grid.clientWidth;
+  const area = grid.parentElement;                    /* <main> */
+  const cs = getComputedStyle(area);
+  const v = area.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const gap = parseFloat(getComputedStyle(grid).gap) || 8;
   if (!h || !v) return;
 
-  /* column counts that divide N exactly come first: no empty cells anywhere */
-  const cols = [];
-  for (let c = 1; c <= N; c++) if (N % c === 0) cols.push(c);
-  if (cols.length === 2) for (let c = 1; c <= N; c++) if (N % c) cols.push(c);   /* prime N */
-
   let best = 1, best_score = -1;
-  for (const c of cols) {
-    const r = Math.ceil(N / c);
-    const ar = (h / c) / (v / r);            /* aspect of one tile */
-    const empty = (c * r - N) / N;           /* holes in the last row */
-    const score = Math.min(ar / ART, ART / ar) * (1 - 0.6 * empty);
+  for (let c = 1; c <= FIT; c++) {
+    if (FIT % c) continue;                            /* only counts that fill the screen exactly */
+    const rows = FIT / c;
+    const ar = (h / c) / (v / rows);                  /* aspect of one tile */
+    const score = Math.min(ar / ART, ART / ar);
     if (score > best_score) { best_score = score; best = c; }
   }
+
+  const rows = FIT / best;
+  const tile = Math.max(44, Math.floor((v - gap * (rows - 1)) / rows));
+
   grid.style.gridTemplateColumns = "repeat(" + best + ", minmax(0, 1fr))";
-  grid.style.gridTemplateRows = "repeat(" + Math.ceil(N / best) + ", minmax(0, 1fr))";
+  grid.style.gridAutoRows = tile + "px";
 }
 
 for (let i = 0; i < N; i++) {
@@ -195,7 +244,7 @@ for (let i = 0; i < N; i++) {
   t.className = "tile";
   t.setAttribute("role", "switch");
   t.setAttribute("aria-checked", "false");
-  t.title = "Switch " + (i + 1) + " - LEDs " + (i * PER_LAMP + 1) + "-" + ((i + 1) * PER_LAMP);
+  t.title = "Lamp " + (i + 1) + " - LEDs " + (i * PER_LAMP + 1) + "-" + ((i + 1) * PER_LAMP);
   t.innerHTML = tile_svg(i + 1) + '<div class="label"></div>';
   t.addEventListener("click", () => toggle(i, t.getAttribute("aria-checked") !== "true"));
   grid.appendChild(t);
@@ -219,64 +268,47 @@ for (let i = 0; i < N; i++) {
   row.appendChild(num);
   row.appendChild(inp);
 
-  /* one hex code per LED behind this lamp */
-  const hexes = document.createElement("div");
-  hexes.className = "hexes";
-  for (let k = 0; k < PER_LAMP; k++) {
-    const led = i * PER_LAMP + k;
-    const wrap = document.createElement("label");
-    wrap.className = "hexbox";
-    const sw = document.createElement("span");
-    const hx = document.createElement("input");
-    hx.type = "text";
-    hx.maxLength = 7;
-    hx.spellcheck = false;
-    hx.setAttribute("autocomplete", "off");
-    hx.value = state.colors[led];
-    wrap.style.setProperty("--c", state.colors[led]);
-    hx.addEventListener("change", () => {
-      const v = norm_hex(hx.value);
-      if (!v) {                                  /* not a hex code: put the old one back */
-        hx.value = state.colors[led];
-        wrap.classList.add("bad");
-        setTimeout(() => wrap.classList.remove("bad"), 900);
-        return;
-      }
-      hx.value = v;
-      wrap.style.setProperty("--c", v);
-      state.colors[led] = v;
-      paint(i);
-      fetch("/color?i=" + led + "&c=" + v.slice(1));
-    });
-    wrap.appendChild(sw);
-    wrap.appendChild(hx);
-    hexes.appendChild(wrap);
-    hexboxes.push({wrap: wrap, hx: hx, led: led});
-  }
-
   box.appendChild(row);
-  box.appendChild(hexes);
   document.getElementById("names").appendChild(box);
   inputs.push(inp);
+}
+
+/* three colour pickers for the whole panel, one per LED of a lamp */
+const swatchbox = document.getElementById("colours");
+for (let k = 0; k < PER_LAMP; k++) {
+  const wrap = document.createElement("label");
+  wrap.className = "swatch";
+  const hx = document.createElement("input");
+  hx.type = "color";
+  hx.value = state.colors[k];
+  let ct = 0;
+  hx.addEventListener("input", () => {
+    const v = hx.value.toUpperCase();
+    state.colors[k] = v;
+    for (let i = 0; i < N; i++) paint(i);
+    clearTimeout(ct);
+    ct = setTimeout(() => fetch("/color?k=" + k + "&c=" + v.slice(1)), 120);
+  });
+  wrap.appendChild(hx);
+  swatchbox.appendChild(wrap);
+  swatches.push(hx);
 }
 
 function paint(i) {
   tiles[i].setAttribute("aria-checked", state.on[i] ? "true" : "false");
   tiles[i].querySelector(".label").textContent = state.names[i];
   if (document.activeElement !== inputs[i]) inputs[i].value = state.names[i];
-  /* the lamp art takes the colour of its first LED; the untouched white default
-     keeps the plain gold "on" look */
-  const c = state.colors[i * PER_LAMP];
-  if (state.on[i] && c.toUpperCase() !== "#FFFFFF") {
-    tiles[i].style.setProperty("--lit", c);
-  } else {
-    tiles[i].style.removeProperty("--lit");
-  }
 }
 
 function paint_transition() {
   for (const r of document.querySelectorAll('input[name="transition"]')) {
     r.checked = +r.value === state.transition;
+  }
+}
+
+function paint_animation() {
+  for (const r of document.querySelectorAll('input[name="animation"]')) {
+    r.checked = +r.value === state.animation;
   }
 }
 
@@ -291,8 +323,37 @@ document.getElementById("alloff").addEventListener("click", () => {
   for (let i = 0; i < N; i++) paint(i);
   fetch("/alloff");
 });
+/* the final button: fill in the dark lamps, then let the running light take over */
+document.getElementById("sequence").addEventListener("click", () => {
+  fetch("/sequence").then(pull).catch(() => {});
+});
+
+let waitLeft = 0;                    /* seconds left in the hold, ticked locally */
+const clock = (s) => Math.floor(s / 60) + ":" + String(Math.max(0, s % 60)).padStart(2, "0");
+
+function paint_sequence() {
+  const b = document.getElementById("sequence");
+  const s = state.sequence;
+  b.classList.toggle("active", s !== 0);
+  b.textContent = s === 0 ? "Light the rest"
+               : s === 1 ? "Stop (filling)"
+               : s === 2 ? "Stop (" + clock(waitLeft) + ")"
+               : "Stop (running)";
+}
+setInterval(() => {
+  if (state.sequence === 2 && waitLeft > 0) { waitLeft--; paint_sequence(); }
+}, 1000);
 document.getElementById("opencfg").addEventListener("click", () => dlg.showModal());
 document.getElementById("closecfg").addEventListener("click", () => dlg.close());
+
+/* factory reset, behind a confirmation */
+const confirmdlg = document.getElementById("confirm");
+document.getElementById("askreset").addEventListener("click", () => confirmdlg.showModal());
+document.getElementById("nocancel").addEventListener("click", () => confirmdlg.close());
+document.getElementById("doreset").addEventListener("click", () => {
+  confirmdlg.close();
+  fetch("/reset").then(pull).catch(() => {});
+});
 
 for (const r of document.querySelectorAll('input[name="transition"]')) {
   r.addEventListener("change", () => {
@@ -300,12 +361,26 @@ for (const r of document.querySelectorAll('input[name="transition"]')) {
     fetch("/transition?v=" + r.value);
   });
 }
+for (const r of document.querySelectorAll('input[name="animation"]')) {
+  r.addEventListener("change", () => {
+    state.animation = +r.value;
+    fetch("/animation?v=" + r.value);
+  });
+}
+hold.addEventListener("change", () => {
+  let v = Math.round(+hold.value || 0);
+  v = Math.min(86400, Math.max(0, v));
+  hold.value = v;
+  state.hold = v;
+  fetch("/hold?v=" + v);
+});
 
 let bt = 0;
 bright.addEventListener("input", () => {
-  brightval.textContent = pct(+bright.value);
+  const v = bright.value;                  /* send what was chosen, not what a poll just set */
+  brightval.textContent = pct(+v);
   clearTimeout(bt);
-  bt = setTimeout(() => fetch("/brightness?v=" + bright.value), 120);
+  bt = setTimeout(() => fetch("/brightness?v=" + v), 120);
 });
 
 async function pull() {
@@ -315,22 +390,50 @@ async function pull() {
   state.colors = s.colors.map((c) => "#" + c);
   state.brightness = s.brightness;
   state.transition = s.transition;
-  bright.value = s.brightness;
-  brightval.textContent = pct(s.brightness);
+  state.animation = s.animation;
+  state.hold = s.hold;
+  state.wait = s.wait;
+  state.sequence = s.sequence;
+  if (s.sequence === 2) waitLeft = s.wait;
+  if (document.activeElement !== bright) {
+    bright.value = s.brightness;
+    brightval.textContent = pct(s.brightness);
+  }
+  if (document.activeElement !== hold) hold.value = s.hold;
   paint_transition();
-  for (const b of hexboxes) {
-    b.hx.value = state.colors[b.led];
-    b.wrap.style.setProperty("--c", state.colors[b.led]);
+  paint_animation();
+  paint_sequence();
+  for (let k = 0; k < PER_LAMP; k++) {
+    if (document.activeElement !== swatches[k]) swatches[k].value = state.colors[k];
   }
   for (let i = 0; i < N; i++) paint(i);
 }
 
-/* keep a second phone in sync */
-setInterval(() => { if (!document.hidden && !dlg.open) pull().catch(() => {}); }, 5000);
+/* The panel bumps /version on every change, so watching that keeps this page in
+   step within about half a second without re-reading the whole state every time. */
+let seen = -1, lastPull = 0, syncTimer = 0;
+
+async function sync() {
+  clearTimeout(syncTimer);
+  try {
+    const v = (await (await fetch("/version")).text()).trim();
+    if (v !== seen || Date.now() - lastPull > 10000) {
+      seen = v;
+      lastPull = Date.now();
+      await pull();
+    }
+  } catch (e) {
+    seen = -1;                      /* panel rebooting or out of range: resync next time */
+  }
+  syncTimer = setTimeout(sync, document.hidden ? 2000 : 500);
+}
+addEventListener("visibilitychange", () => { if (!document.hidden) sync(); });
 addEventListener("resize", () => requestAnimationFrame(layout));
 addEventListener("orientationchange", () => requestAnimationFrame(layout));
 layout();
 paint_transition();
-pull().catch(() => {});
+paint_animation();
+paint_sequence();
+sync();
 </script>
 </body></html>
