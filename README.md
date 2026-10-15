@@ -6,6 +6,10 @@ app, no router and no internet connection involved.
 
 ![The control page](docs/screenshot.png)
 
+https://github.com/user-attachments/assets/a1f71b5c-fbcd-48cb-8504-f9e07d6e75cd
+
+
+
 ## Hardware
 
 | | |
